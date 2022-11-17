@@ -8,9 +8,138 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:image/image.dart' as img;
+import 'package:provider/provider.dart';
 
-void main() {
-  runApp(const MyApp());
+Future<Uint8List> loadDataFromAsset(String location) async {
+  final data = await rootBundle.load(location);
+  final buffer = img
+      .decodeImage(data.buffer.asUint8List())!
+      .getBytes(format: img.Format.luminance)
+      .map((e) => e == 0 ? 0 : 1)
+      .toList();
+  return Uint8List.fromList(buffer);
+}
+
+class UserModel {
+  final Map<String, Uint8List> share2s = {};
+
+  void setDoor(String doorName, Uint8List share2) {
+    share2s[doorName] = share2;
+  }
+}
+
+class UsersModel extends ChangeNotifier {
+  final Map<String, UserModel> _map = {};
+  String? currentUserName;
+
+  UsersModel();
+
+  void setUser(String userName, UserModel user) {
+    _map[userName] = user;
+    notifyListeners();
+  }
+
+  void setCurrentUserName(String userName) {
+    currentUserName = userName;
+    notifyListeners();
+  }
+
+  Uint8List query(String doorName) {
+    return _map[currentUserName]!.share2s[doorName]!;
+  }
+
+  List<String> queryOpenableDoor() {
+    return _map[currentUserName]!.share2s.keys.toList();
+  }
+}
+
+class Setting extends StatelessWidget {
+  const Setting({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final users = ['user1', 'user2'];
+    final openalbeDoors = context.watch<UsersModel>().queryOpenableDoor();
+    for (final user in users) {
+      debugPrint(user);
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Setting'),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text('User: '),
+                DropdownButton(
+                  value: context.watch<UsersModel>().currentUserName,
+                  items: users
+                      .map((String doorName) => DropdownMenuItem(
+                          value: doorName, child: Text(doorName)))
+                      .toList(),
+                  onChanged: (String? newValue) {
+                    if (newValue != null) {
+                      context.read<UsersModel>().setCurrentUserName(newValue);
+                    }
+                  },
+                ),
+              ],
+            ),
+            const Text('Openable Doors:'),
+            Expanded(
+              child: ListView.builder(
+                itemCount: openalbeDoors.length,
+                itemBuilder: (BuildContext context, int index) {
+                  return Center(child: Text(openalbeDoors[index]));
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  final user1 = UserModel();
+  user1.setDoor(
+    'door1',
+    await loadDataFromAsset('assets/images/door1/door1_share2_1.png'),
+  );
+  user1.setDoor(
+    'door2',
+    await loadDataFromAsset('assets/images/door2/door2_share2_1.png'),
+  );
+  final user2 = UserModel();
+  user2.setDoor(
+    'door1',
+    await loadDataFromAsset('assets/images/door1/door1_share2_2.png'),
+  );
+  user2.setDoor(
+    'door2',
+    await loadDataFromAsset('assets/images/door2/door2_share2_2.png'),
+  );
+
+  final users = UsersModel();
+  users.setUser('user1', user1);
+  users.setUser('user2', user2);
+
+  users.setCurrentUserName('user1');
+
+  runApp(
+    ChangeNotifierProvider.value(
+      value: users,
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -23,7 +152,7 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
-      home: const MyHomePage(title: 'Door'),
+      home: const MyHomePage(title: 'User'),
     );
   }
 }
@@ -38,34 +167,27 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   final cameraController = MobileScannerController(
-    // facing: CameraFacing.back,
+    facing: CameraFacing.back,
     formats: [BarcodeFormat.qrCode],
   );
-  Uint8List share2 = Uint8List(0);
   Widget qrcode = const SizedBox.shrink();
-
-  @override
-  void initState() {
-    super.initState();
-
-    rootBundle.load('assets/images/share2.png').then((data) {
-      final buffer = img
-          .decodeImage(data.buffer.asUint8List())!
-          .getBytes(format: img.Format.luminance)
-          .map((e) => e == 0 ? 1 : 0)
-          .toList();
-
-      setState(() {
-        share2 = Uint8List.fromList(buffer);
-      });
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
+        actions: [
+          IconButton(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const Setting()),
+              );
+            },
+            icon: const Icon(Icons.settings),
+          )
+        ],
       ),
       body: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -94,7 +216,7 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  Widget generateQrCode(int seed) {
+  Widget generateQrCode(int seed, Uint8List share2) {
     Random rng = Random(seed);
 
     final buffer = Uint8List(share2.length ~/ 8);
@@ -116,11 +238,12 @@ class _MyHomePageState extends State<MyHomePage> {
   void handleQrCode(String data) {
     debugPrint(data);
     final tmp = data.split('&');
-    final doorname = tmp[0].split('=')[1];
+    final doorName = tmp[0].split('=')[1];
     final seed = int.parse(tmp[1].split('=')[1]);
 
+    final share2 = context.read<UsersModel>().query(doorName);
     setState(() {
-      qrcode = generateQrCode(seed);
+      qrcode = generateQrCode(seed, share2);
     });
   }
 }
